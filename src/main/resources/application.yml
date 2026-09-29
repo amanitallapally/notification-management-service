@@ -1,0 +1,61 @@
+spring:
+  application:
+    name: notification-management-service
+  datasource:
+    url: jdbc:h2:mem:notificationdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+notification:
+  delivery:
+    worker-pool-size: 4
+    queue-capacity: 1000
+  retry:
+    max-attempts: 5
+    initial-backoff-ms: 1000
+    backoff-multiplier: 2.0
+    max-backoff-ms: 30000
+    poll-interval-ms: 1000
+  idempotency:
+    retention-hours: 24
+  routing:
+    # Default channel fallback order applied when recipient has no explicit preference
+    default-channel-order: EMAIL,SMS,PUSH,WEBHOOK
+    # Severities that force escalation to all eligible channels regardless of preference
+    escalate-severities: CRITICAL
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.schwab.assessment.notification: DEBUG
