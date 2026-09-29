@@ -56,11 +56,24 @@ class NotificationControllerIntegrationTest {
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 mockMvc.perform(get("/api/v1/notifications/{id}", notificationId))
                         .andExpect(jsonPath("$.overallStatus", is("DELIVERED")))
+                        .andExpect(jsonPath("$.selectedChannels[0]", is("EMAIL")))
                         .andExpect(jsonPath("$.recipientChannels[0].deliveryStatus", is("SUCCEEDED"))));
 
         mockMvc.perform(get("/api/v1/notifications/{id}/audit", notificationId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].action", is("NOTIFICATION_ACCEPTED")));
+    }
+
+    @Test
+    void invalidSubmissionIsRejectedAndAudited() throws Exception {
+        String body = "{\"sourceSystem\":\"trading-alerts\"}"; // missing required fields
+
+        mockMvc.perform(post("/api/v1/notifications")
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.rejectionReference").exists())
+                .andExpect(jsonPath("$.fieldErrors").isNotEmpty());
     }
 
     @Test

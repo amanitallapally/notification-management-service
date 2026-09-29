@@ -3,6 +3,8 @@ package com.schwab.assessment.notification.service;
 import com.schwab.assessment.notification.domain.ChannelType;
 import com.schwab.assessment.notification.domain.Severity;
 import com.schwab.assessment.notification.repository.RecipientPreferenceRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +34,8 @@ import java.util.Set;
 @Service
 public class RoutingService {
 
+    private static final Logger log = LoggerFactory.getLogger(RoutingService.class);
+
     private final RecipientPreferenceRepository recipientPreferenceRepository;
     private final Set<Severity> escalateSeverities;
 
@@ -48,10 +52,11 @@ public class RoutingService {
 
     public List<ChannelType> resolveChannels(String recipientId, List<ChannelType> requestedChannels, Severity severity) {
         if (escalateSeverities.contains(severity)) {
+            log.debug("Escalating recipient={} severity={} to all requested channels={}", recipientId, severity, requestedChannels);
             return List.copyOf(requestedChannels);
         }
 
-        return recipientPreferenceRepository.findById(recipientId)
+        List<ChannelType> resolved = recipientPreferenceRepository.findById(recipientId)
                 .map(pref -> {
                     List<ChannelType> preferred = pref.preferredChannelList();
                     List<ChannelType> filtered = preferred.stream()
@@ -61,5 +66,7 @@ public class RoutingService {
                     return filtered.isEmpty() ? List.copyOf(requestedChannels) : filtered;
                 })
                 .orElseGet(() -> List.copyOf(requestedChannels));
+        log.debug("Resolved channels={} for recipient={} requested={} severity={}", resolved, recipientId, requestedChannels, severity);
+        return resolved;
     }
 }

@@ -6,6 +6,8 @@ import com.schwab.assessment.notification.model.NotificationEntity;
 import com.schwab.assessment.notification.model.RecipientChannelEntity;
 import com.schwab.assessment.notification.repository.NotificationRepository;
 import com.schwab.assessment.notification.repository.RecipientChannelRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +21,8 @@ import java.util.Set;
  */
 @Service
 public class NotificationStatusAggregator {
+
+    private static final Logger log = LoggerFactory.getLogger(NotificationStatusAggregator.class);
 
     private static final Set<DeliveryStatus> TERMINAL_FAILURE = Set.of(
             DeliveryStatus.FAILED_TERMINAL, DeliveryStatus.EXHAUSTED);
@@ -65,6 +69,7 @@ public class NotificationStatusAggregator {
         }
 
         if (newStatus != notification.getStatus()) {
+            log.debug("notification={} overallStatus {} -> {}", notificationId, notification.getStatus(), newStatus);
             notification.setStatus(newStatus);
             notificationRepository.save(notification);
         }

@@ -21,9 +21,57 @@ full architecture, decisions, and scenario write-ups.
 - No local Maven install required - the Maven Wrapper (`mvnw`) is committed.
 - No database, message broker, or other external service needed - the
   service uses an in-memory H2 database and an in-process async pipeline
-  (see [Limitations & trade-offs](#4-limitations--trade-offs)).
+  (see [Limitations & trade-offs](#5-limitations--trade-offs)).
 
-## 2. Setup & running
+## 2. Engineering scenarios (greenfield / brownfield / ambiguous)
+
+The assignment requires three engineering scenarios, each showing
+decomposition, execution, and validation. Full write-ups are in
+[memory-bank/scenarios.md](memory-bank/scenarios.md); the summary below maps
+each required sub-item directly to the code and tests that satisfy it.
+
+### 2.1 Greenfield - initial notification-management capability
+
+| Sub-requirement | Implementation | Test evidence |
+|---|---|---|
+| Notification submission | `NotificationController.submit` -> `NotificationSubmissionService` | `submitAndDeliverSucceeds`, `invalidSubmissionIsRejectedAndAudited` |
+| Recipient and channel selection | `RoutingService.resolveChannels` (requested channel + severity + preference) | `RoutingServiceTest` (4 cases) |
+| Asynchronous processing | `DeliveryOrchestrator` (`@Async`) + `deliveryExecutor` thread pool | Submission returns `202 Accepted` immediately; delivery runs on worker threads |
+| Delivery attempts | `DeliveryAttemptExecutor` + append-only `DeliveryAttemptEntity` | `flakyRecipientRetriesThenSucceeds` (asserts 3 attempts) |
+| Status retrieval | `GET /notifications/{id}` -> `NotificationStatusService` | `submitAndDeliverSucceeds` polls status to `DELIVERED` |
+
+### 2.2 Brownfield - enhancement spanning multiple layers
+
+The assignment names three example change types; this prototype implements
+two of them together as one coupled, multi-layer change:
+
+- **Refactor provider-specific logic**: `EmailProvider`/`SmsProvider`/
+  `PushProvider` each duplicated failure-simulation logic -> extracted into
+  `AbstractSimulatedProvider`. Behavior-preserving (existing provider tests
+  kept passing unmodified).
+- **A new notification channel**: `ChannelType.WEBHOOK` + `WebhookProvider`,
+  with **zero changes** to `ProviderRegistry`, `DeliveryAttemptExecutor`, or
+  `RoutingService` - proof the greenfield strategy-pattern decoupling paid
+  off. Validated by `webhookChannelDeliversSuccessfully`.
+
+The third example ("deduplication") was deliberately built during
+**greenfield** instead, since requirement 4.4 makes it a hard *must* for the
+initial capability rather than an optional enhancement - called out
+explicitly so it isn't mistaken for a missed brownfield item.
+
+### 2.3 Ambiguous requirement scenario
+
+Demonstrated via a table of concrete ambiguities - each with a documented,
+defensible resolution rather than an arbitrary guess - in
+[memory-bank/scenarios.md](memory-bank/scenarios.md#ambiguous-requirement-scenario):
+idempotency-key derivation, channel-routing precedence, state-model shape,
+dedup retention value, audit sensitive-content boundary, and
+expiration-enforcement scope. Also documented: the source assignment PDF
+itself is missing sections 4.6-4.8 (confirmed by page-by-page extraction),
+handled by implementing only what's explicitly specified rather than
+inventing scope.
+
+## 3. Setup & running
 
 ```bash
 # From the repository root
@@ -101,7 +149,7 @@ curl -s -X POST http://localhost:8080/api/v1/notifications \
   -d '{"sourceSystem":"ops","eventId":"evt-2","notificationType":"SYSTEM","severity":"MEDIUM","priority":"NORMAL","recipients":["flaky-user"],"requestedChannels":["SMS"]}'
 ```
 
-## 3. Testing approach
+## 4. Testing approach
 
 Run the full suite:
 ```bash
@@ -147,7 +195,7 @@ load. Retry-related tests override `notification.retry.*` properties via
 - The H2 console / actuator endpoints (operational tooling, not business
   logic).
 
-## 4. Limitations & trade-offs
+## 5. Limitations & trade-offs
 
 These are deliberate scope decisions for a reviewable prototype, not
 oversights. Each is expanded on in [memory-bank/decisions.md](memory-bank/decisions.md).
@@ -164,7 +212,7 @@ oversights. Each is expanded on in [memory-bank/decisions.md](memory-bank/decisi
 | Transaction boundary | Provider "I/O" runs inside the same DB transaction as the claim/result persist | Correct and simple because providers are fast in-memory simulations | Move real provider I/O outside the transaction (claim in txn A, call provider, persist result in txn B), since real network calls should never hold a DB transaction open |
 | Audit content | Sensitive-content exclusion is enforced by convention/code review | Simple for a prototype | A serialization-time redaction filter as defense in depth |
 
-## 5. Project layout
+## 6. Project layout
 
 ```
 src/main/java/com/schwab/assessment/notification/
@@ -185,7 +233,7 @@ memory-bank/         Architecture, decisions, state model, scenarios,
                      changelog, and other persistent project knowledge
 ```
 
-## 6. Configuration reference
+## 7. Configuration reference
 
 See [memory-bank/techContext.md](memory-bank/techContext.md) for the full
 list of `application.yml` properties (retry attempts/backoff, worker pool

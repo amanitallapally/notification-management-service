@@ -36,6 +36,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `README.md` with setup instructions, testing approach, limitations, and
   trade-offs.
 
+## [1.0.1] - Requirement gap fixes after PDF re-verification
+
+### Fixed
+- `GET /notifications/{id}` now returns a top-level `selectedChannels` field
+  (distinct channels across all recipients), explicitly required by 4.2
+  and previously only recoverable by scanning `recipientChannels`.
+- Submission rejections (bean-validation failures, e.g. missing required
+  fields) now record a `NOTIFICATION_REJECTED` audit event under a
+  standalone reference id returned as `rejectionReference` in the `400`
+  response body - previously `AuditAction.NOTIFICATION_REJECTED` existed but
+  was never actually recorded, silently failing part of requirement 4.9.
+  See `decisions.md#D7b`.
+
+
 ### Testing
 - 22 automated tests: unit tests for routing, retry backoff math, provider
   failure classification, deduplication; end-to-end MockMvc tests covering

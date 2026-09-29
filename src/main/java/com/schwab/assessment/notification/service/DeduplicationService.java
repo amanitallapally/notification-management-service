@@ -2,6 +2,8 @@ package com.schwab.assessment.notification.service;
 
 import com.schwab.assessment.notification.model.IdempotencyRecordEntity;
 import com.schwab.assessment.notification.repository.IdempotencyRecordRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -27,6 +29,8 @@ import java.util.Optional;
 @Service
 public class DeduplicationService {
 
+    private static final Logger log = LoggerFactory.getLogger(DeduplicationService.class);
+
     private final IdempotencyRecordRepository idempotencyRecordRepository;
     private final Duration retention;
 
@@ -46,6 +50,7 @@ public class DeduplicationService {
         Optional<IdempotencyRecordEntity> existing =
                 idempotencyRecordRepository.findByIdempotencyKeyAndExpiresAtAfter(idempotencyKey, now);
         if (existing.isPresent()) {
+            log.debug("Idempotency key={} already reserved by notification={}", idempotencyKey, existing.get().getNotificationId());
             return Optional.of(existing.get().getNotificationId());
         }
 
@@ -59,6 +64,7 @@ public class DeduplicationService {
             return Optional.empty();
         } catch (DataIntegrityViolationException raceLost) {
             // Concurrent submission won the race for this key; treat as duplicate.
+            log.warn("Lost race reserving idempotency key={}; treating as duplicate", idempotencyKey);
             return idempotencyRecordRepository.findByIdempotencyKeyAndExpiresAtAfter(idempotencyKey, now)
                     .map(IdempotencyRecordEntity::getNotificationId);
         }

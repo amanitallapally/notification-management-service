@@ -33,8 +33,10 @@ public class NotificationStatusService {
         NotificationEntity notification = notificationRepository.findById(notificationId)
                 .orElseThrow(() -> new NotificationNotFoundException(notificationId));
 
+        var channelRows = recipientChannelRepository.findByNotificationId(notificationId);
+
         List<NotificationStatusResponse.RecipientChannelStatus> recipientChannels =
-                recipientChannelRepository.findByNotificationId(notificationId).stream()
+                channelRows.stream()
                         .map(rc -> new NotificationStatusResponse.RecipientChannelStatus(
                                 rc.getRecipientId(),
                                 rc.getChannel().name(),
@@ -47,6 +49,11 @@ public class NotificationStatusService {
                                 rc.getLastFailureReason()))
                         .toList();
 
+        List<String> selectedChannels = channelRows.stream()
+                .map(rc -> rc.getChannel().name())
+                .distinct()
+                .toList();
+
         return new NotificationStatusResponse(
                 notification.getId(),
                 notification.getStatus(),
@@ -55,6 +62,7 @@ public class NotificationStatusService {
                 notification.getCreatedAt(),
                 notification.getScheduledAt(),
                 notification.getExpiresAt(),
+                selectedChannels,
                 recipientChannels);
     }
 

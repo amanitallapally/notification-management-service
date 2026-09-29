@@ -17,6 +17,8 @@ public record NotificationStatusResponse(
         Instant createdAt,
         Instant scheduledAt,
         Instant expiresAt,
+        /** Distinct channels selected across all recipients (requirement 4.2). */
+        List<String> selectedChannels,
         List<RecipientChannelStatus> recipientChannels
 ) {
     public record RecipientChannelStatus(

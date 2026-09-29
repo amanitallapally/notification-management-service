@@ -91,6 +91,20 @@ copy-pasted per channel into `AbstractSimulatedProvider`, then added
 `WebhookProvider` as a genuinely new channel with zero orchestrator changes.
 See `scenarios.md#brownfield`.
 
+## D7b. Rejected submissions are audited under a standalone reference id
+Requirement 4.9 explicitly lists "Notification accepted / rejected" as an
+audit action. Bean-validation failures happen before a `NotificationEntity`
+exists (no notification id has been assigned yet), so `GlobalExceptionHandler`
+generates a standalone `rej_<uuid>` reference, records a
+`NOTIFICATION_REJECTED` audit event against it (field names/validation
+messages only - no submitted values), and returns that reference in the
+`400` response body as `rejectionReference`. This event is **not**
+retrievable via `GET /notifications/{id}/audit` since no notification
+record backs it - that endpoint 404s for ids with no persisted
+notification. This is a deliberate, documented trade-off: it satisfies the
+audit requirement without relaxing NOT NULL constraints on
+`NotificationEntity` just to persist a half-formed rejected record.
+
 ## D8. Audit content minimization (requirement 4.9)
 `AuditEventEntity.details` and `DeliveryAttemptEntity.providerResponseSummary`
 are free-text but populated only with identifiers, enum names, and short
