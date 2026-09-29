@@ -4,14 +4,14 @@
 
 ```mermaid
 flowchart LR
-    Client[Upstream System] -->|POST /notifications| API[NotificationController]
+    Client[Upstream System] -->|"POST /notifications"| API[NotificationController]
     API --> Submit[NotificationSubmissionService]
     Submit --> Dedup[DeduplicationService]
     Submit --> Persist[NotificationPersistenceService]
     Persist --> Route[RoutingService]
     Persist --> DB[(H2 Database)]
     Submit --> Orchestrator[DeliveryOrchestrator]
-    Orchestrator -->|@Async| Executor[DeliveryAttemptExecutor]
+    Orchestrator -->|"async submit"| Executor[DeliveryAttemptExecutor]
     Executor --> Registry[ProviderRegistry]
     Registry --> Email[EmailProvider]
     Registry --> Sms[SmsProvider]
@@ -20,8 +20,8 @@ flowchart LR
     Executor --> Aggregator[NotificationStatusAggregator]
     Executor --> Audit[AuditService]
     Executor --> DB
-    Scheduler[RetryScheduler] -->|poll due retries| Orchestrator
-    Client2[Upstream System] -->|GET /notifications/id| Status[NotificationStatusService]
+    Scheduler[RetryScheduler] -->|"poll due retries"| Orchestrator
+    Client2[Upstream System] -->|"GET /notifications/id"| Status[NotificationStatusService]
     Status --> DB
 ```
 
