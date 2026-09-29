@@ -1,0 +1,73 @@
+spring:
+  application:
+    name: notification-management-service
+  datasource:
+    url: jdbc:h2:mem:notificationdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      # Disabled by default: the H2 console has no auth layer of its own and
+      # the datasource uses a blank-password 'sa' account, so exposing it
+      # unconditionally would let any network client read/mutate the DB.
+      # Enable only for local development via the 'dev' profile
+      # (--spring.profiles.active=dev), never in a shared/deployed environment.
+      enabled: false
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+notification:
+  delivery:
+    worker-pool-size: 4
+    queue-capacity: 1000
+  retry:
+    max-attempts: 5
+    initial-backoff-ms: 1000
+    backoff-multiplier: 2.0
+    max-backoff-ms: 30000
+    poll-interval-ms: 1000
+    # Recovery threshold: a QUEUED row older than this was never dispatched
+    # (e.g. bounded executor rejected it, or the process restarted) and gets
+    # resubmitted by RetryScheduler.
+    stale-queue-threshold-ms: 5000
+  idempotency:
+    retention-hours: 24
+  routing:
+    # Fallback ordering applied to requested channels when the recipient has
+    # no stored preference (or their preference doesn't overlap the request).
+    # Channels not listed here keep their original relative order, appended
+    # after the ones that are listed.
+    default-channel-order: EMAIL,SMS,PUSH,WEBHOOK
+    # Severities that force escalation to all eligible channels regardless of preference
+    escalate-severities: CRITICAL
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.schwab.assessment.notification: DEBUG
