@@ -26,7 +26,7 @@ class RoutingServiceTest {
 
     @BeforeEach
     void setUp() {
-        routingService = new RoutingService(recipientPreferenceRepository, "CRITICAL");
+        routingService = new RoutingService(recipientPreferenceRepository, "CRITICAL", "EMAIL,SMS,PUSH,WEBHOOK");
     }
 
     @Test
@@ -73,6 +73,17 @@ class RoutingServiceTest {
         List<ChannelType> result = routingService.resolveChannels(
                 "user-1", List.of(ChannelType.EMAIL, ChannelType.SMS, ChannelType.PUSH), Severity.CRITICAL);
 
+        assertThat(result).containsExactly(ChannelType.EMAIL, ChannelType.SMS, ChannelType.PUSH);
+    }
+
+    @Test
+    void appliesDefaultChannelOrderWhenNoPreferenceExists() {
+        when(recipientPreferenceRepository.findById("user-x")).thenReturn(Optional.empty());
+
+        List<ChannelType> result = routingService.resolveChannels(
+                "user-x", List.of(ChannelType.PUSH, ChannelType.EMAIL, ChannelType.SMS), Severity.MEDIUM);
+
+        // Requested out of order (PUSH, EMAIL, SMS) but default order is EMAIL,SMS,PUSH,WEBHOOK
         assertThat(result).containsExactly(ChannelType.EMAIL, ChannelType.SMS, ChannelType.PUSH);
     }
 }

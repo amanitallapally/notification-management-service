@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -38,9 +39,11 @@ public class RoutingService {
 
     private final RecipientPreferenceRepository recipientPreferenceRepository;
     private final Set<Severity> escalateSeverities;
+    private final List<ChannelType> defaultChannelOrder;
 
     public RoutingService(RecipientPreferenceRepository recipientPreferenceRepository,
-                           @Value("${notification.routing.escalate-severities:CRITICAL}") String escalateSeveritiesCsv) {
+                           @Value("${notification.routing.escalate-severities:CRITICAL}") String escalateSeveritiesCsv,
+                           @Value("${notification.routing.default-channel-order:}") String defaultChannelOrderCsv) {
         this.recipientPreferenceRepository = recipientPreferenceRepository;
         this.escalateSeverities = new LinkedHashSet<>();
         for (String s : escalateSeveritiesCsv.split(",")) {
@@ -48,6 +51,9 @@ public class RoutingService {
                 escalateSeverities.add(Severity.valueOf(s.trim()));
             }
         }
+        this.defaultChannelOrder = defaultChannelOrderCsv.isBlank()
+                ? List.of()
+                : List.of(defaultChannelOrderCsv.split(",")).stream().map(String::trim).map(ChannelType::valueOf).toList();
     }
 
     public List<ChannelType> resolveChannels(String recipientId, List<ChannelType> requestedChannels, Severity severity) {
@@ -62,11 +68,32 @@ public class RoutingService {
                     List<ChannelType> filtered = preferred.stream()
                             .filter(requestedChannels::contains)
                             .toList();
-                    // If preference doesn't intersect the request at all, fall back to the request as-is
-                    return filtered.isEmpty() ? List.copyOf(requestedChannels) : filtered;
+                    // If preference doesn't intersect the request at all, fall back to
+                    // the configured default order instead of the raw request order.
+                    return filtered.isEmpty() ? applyDefaultOrder(requestedChannels) : filtered;
                 })
-                .orElseGet(() -> List.copyOf(requestedChannels));
+                .orElseGet(() -> applyDefaultOrder(requestedChannels));
         log.debug("Resolved channels={} for recipient={} requested={} severity={}", resolved, recipientId, requestedChannels, severity);
         return resolved;
     }
+
+    /**
+     * Orders requested channels by the configured default fallback order
+     * (requirement 4.3 "Routing policy" factor); channels absent from that
+     * configured order keep their original relative position, appended
+     * after the ones that are listed. Sort is stable, so ties preserve
+     * encounter order.
+     */
+    private List<ChannelType> applyDefaultOrder(List<ChannelType> requestedChannels) {
+        if (defaultChannelOrder.isEmpty()) {
+            return List.copyOf(requestedChannels);
+        }
+        return requestedChannels.stream()
+                .sorted(Comparator.comparingInt(c -> {
+                    int idx = defaultChannelOrder.indexOf(c);
+                    return idx < 0 ? Integer.MAX_VALUE : idx;
+                }))
+                .toList();
+    }
 }
+

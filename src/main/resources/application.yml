@@ -8,7 +8,12 @@ spring:
     password: ""
   h2:
     console:
-      enabled: true
+      # Disabled by default: the H2 console has no auth layer of its own and
+      # the datasource uses a blank-password 'sa' account, so exposing it
+      # unconditionally would let any network client read/mutate the DB.
+      # Enable only for local development via the 'dev' profile
+      # (--spring.profiles.active=dev), never in a shared/deployed environment.
+      enabled: false
       path: /h2-console
   jpa:
     hibernate:
@@ -41,10 +46,17 @@ notification:
     backoff-multiplier: 2.0
     max-backoff-ms: 30000
     poll-interval-ms: 1000
+    # Recovery threshold: a QUEUED row older than this was never dispatched
+    # (e.g. bounded executor rejected it, or the process restarted) and gets
+    # resubmitted by RetryScheduler.
+    stale-queue-threshold-ms: 5000
   idempotency:
     retention-hours: 24
   routing:
-    # Default channel fallback order applied when recipient has no explicit preference
+    # Fallback ordering applied to requested channels when the recipient has
+    # no stored preference (or their preference doesn't overlap the request).
+    # Channels not listed here keep their original relative order, appended
+    # after the ones that are listed.
     default-channel-order: EMAIL,SMS,PUSH,WEBHOOK
     # Severities that force escalation to all eligible channels regardless of preference
     escalate-severities: CRITICAL

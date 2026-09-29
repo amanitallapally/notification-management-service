@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -63,6 +64,24 @@ public class GlobalExceptionHandler {
         log.warn("Rejected submission reference={} reason={}", rejectionReference, ex.getMessage());
 
         Map<String, Object> body = errorBody(ex.getMessage());
+        body.put("rejectionReference", rejectionReference);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    /**
+     * Covers malformed JSON and invalid enum literals (e.g. {@code "severity":
+     * "NOT_A_SEVERITY"}), which Jackson rejects during deserialization before
+     * bean validation ever runs - so {@link MethodArgumentNotValidException}
+     * never fires for them. The raw parser message is not echoed back (it can
+     * include internal class/field details); only a generic message plus the
+     * audited rejection reference is returned.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnreadableBody(HttpMessageNotReadableException ex) {
+        String rejectionReference = recordRejection("unreadable_request_body");
+        log.warn("Rejected unreadable request body reference={}", rejectionReference);
+
+        Map<String, Object> body = errorBody("Request body is malformed or contains invalid field values");
         body.put("rejectionReference", rejectionReference);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }

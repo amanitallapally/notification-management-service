@@ -18,7 +18,7 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "notifications", indexes = {
-        @Index(name = "idx_notification_idempotency_key", columnList = "idempotencyKey", unique = true),
+        @Index(name = "idx_notification_idempotency_key", columnList = "idempotencyKey"),
         @Index(name = "idx_notification_source_event", columnList = "sourceSystem,eventId")
 })
 @Getter
@@ -52,9 +52,14 @@ public class NotificationEntity {
 
     /**
      * Idempotency key used for the dedup boundary described in
-     * memory-bank/decisions.md#deduplication. Unique per logical notification.
+     * memory-bank/decisions.md#deduplication. Deliberately NOT a unique DB
+     * constraint: enforcement (including expiry-aware reuse) lives entirely
+     * in {@link IdempotencyRecordEntity} / {@code DeduplicationService}. A
+     * permanent unique constraint here would block key reuse after the
+     * documented retention window expires, contradicting the retention
+     * policy.
      */
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false)
     private String idempotencyKey;
 
     @Column(nullable = false)

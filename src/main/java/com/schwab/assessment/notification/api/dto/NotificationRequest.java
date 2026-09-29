@@ -5,6 +5,7 @@ import com.schwab.assessment.notification.domain.NotificationType;
 import com.schwab.assessment.notification.domain.Priority;
 import com.schwab.assessment.notification.domain.Severity;
 import jakarta.validation.constraints.Future;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -17,9 +18,9 @@ import java.util.List;
  */
 public record NotificationRequest(
 
-        @NotNull String sourceSystem,
+        @NotBlank @Size(max = 100) String sourceSystem,
 
-        @NotNull String eventId,
+        @NotBlank @Size(max = 100) String eventId,
 
         @NotNull NotificationType notificationType,
 
@@ -35,7 +36,7 @@ public record NotificationRequest(
          * Client-supplied idempotency key. If omitted, one is derived from
          * sourceSystem+eventId (see memory-bank/decisions.md#deduplication).
          */
-        String idempotencyKey,
+        @Size(max = 200) String idempotencyKey,
 
         @Size(max = 255) String subject,
 

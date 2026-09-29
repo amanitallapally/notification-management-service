@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Owns the transactional persistence steps for a submission. Kept as a
@@ -29,19 +30,44 @@ public class NotificationPersistenceService {
     private final RecipientChannelRepository recipientChannelRepository;
     private final RoutingService routingService;
     private final AuditService auditService;
+    private final DeduplicationService deduplicationService;
 
     public NotificationPersistenceService(NotificationRepository notificationRepository,
                                            RecipientChannelRepository recipientChannelRepository,
                                            RoutingService routingService,
-                                           AuditService auditService) {
+                                           AuditService auditService,
+                                           DeduplicationService deduplicationService) {
         this.notificationRepository = notificationRepository;
         this.recipientChannelRepository = recipientChannelRepository;
         this.routingService = routingService;
         this.auditService = auditService;
+        this.deduplicationService = deduplicationService;
     }
 
+    /**
+     * Reserves the idempotency key, persists the notification, and routes/
+     * queues its recipient-channels - all in a single transaction. Doing this
+     * atomically means a failure partway through (e.g. routing throws) rolls
+     * back the idempotency reservation too, so the key is never left pointing
+     * at a notification that was never fully created (see
+     * memory-bank/decisions.md).
+     */
     @Transactional
-    public NotificationEntity persistNotification(String notificationId, String idempotencyKey, NotificationRequest request) {
+    public SubmissionResult submitTransactionally(String notificationId, String idempotencyKey, NotificationRequest request) {
+        Optional<String> existing = deduplicationService.checkAndReserve(idempotencyKey, notificationId);
+        if (existing.isPresent()) {
+            return SubmissionResult.duplicate(existing.get());
+        }
+
+        NotificationEntity notification = persistNotification(notificationId, idempotencyKey, request);
+        auditService.record(notificationId, AuditAction.NOTIFICATION_ACCEPTED,
+                "sourceSystem=" + request.sourceSystem() + ",eventId=" + request.eventId());
+
+        List<RecipientChannelEntity> targets = routeAndQueue(notification, request);
+        return SubmissionResult.created(notification, targets);
+    }
+
+    private NotificationEntity persistNotification(String notificationId, String idempotencyKey, NotificationRequest request) {
         Instant now = Instant.now();
         NotificationEntity notification = NotificationEntity.builder()
                 .id(notificationId)
@@ -60,8 +86,7 @@ public class NotificationPersistenceService {
         return notificationRepository.save(notification);
     }
 
-    @Transactional
-    public List<RecipientChannelEntity> routeAndQueue(NotificationEntity notification, NotificationRequest request) {
+    private List<RecipientChannelEntity> routeAndQueue(NotificationEntity notification, NotificationRequest request) {
         Instant now = Instant.now();
         List<RecipientChannelEntity> created = new ArrayList<>();
 
@@ -94,4 +119,18 @@ public class NotificationPersistenceService {
         notificationRepository.save(notification);
         return created;
     }
+
+    /** Result of {@link #submitTransactionally}: either an existing duplicate or a newly created notification + its queued targets. */
+    public record SubmissionResult(boolean duplicate, String notificationId, NotificationEntity notification,
+                                    List<RecipientChannelEntity> targets) {
+
+        static SubmissionResult duplicate(String originalNotificationId) {
+            return new SubmissionResult(true, originalNotificationId, null, List.of());
+        }
+
+        static SubmissionResult created(NotificationEntity notification, List<RecipientChannelEntity> targets) {
+            return new SubmissionResult(false, notification.getId(), notification, targets);
+        }
+    }
 }
+

@@ -40,7 +40,10 @@ public class NotificationStatusAggregator {
 
     @Transactional
     public void recompute(String notificationId) {
-        NotificationEntity notification = notificationRepository.findById(notificationId).orElse(null);
+        // Pessimistic write lock serializes concurrent recomputes for the same
+        // notification so a transaction never commits a rollup computed from a
+        // stale sibling snapshot (see memory-bank/decisions.md).
+        NotificationEntity notification = notificationRepository.findByIdForUpdate(notificationId).orElse(null);
         if (notification == null) {
             return;
         }

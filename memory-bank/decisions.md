@@ -2,6 +2,23 @@
 
 Each entry: **Decision - Context - Rationale - Trade-off/Alternative considered**.
 
+## D0. Copilot PR review fixes (2026-09-29)
+GitHub Copilot's automated PR review found 10 real defects across
+correctness, concurrency, security, and validation. All were fixed; each is
+cross-referenced from its relevant existing decision below, and net-new
+decisions (D10-D12) were added for issues that didn't fit an existing entry.
+Summary:
+1. Malformed JSON / invalid enum tokens bypassed the audit/rejection path -> `GlobalExceptionHandler` now also handles `HttpMessageNotReadableException`.
+2. `NotificationEntity.idempotencyKey` had a permanent unique DB constraint that fought the documented 24h retention window -> constraint removed; enforcement now lives solely in `IdempotencyRecordEntity` (see D3).
+3. Idempotency reservation was committed before notification persistence/routing, so a later failure left an orphaned reservation -> both now happen in one transaction (see D3).
+4. Submitting to the bounded delivery executor could throw and strand `QUEUED` rows with nothing ever re-scanning them -> `RetryScheduler` now also sweeps stale `QUEUED` rows, and the dispatch loop no longer lets a rejection surface as a 500 (see D2, D11).
+5. Caller-supplied idempotency keys weren't namespaced by source system, allowing cross-system collisions/leaks -> all keys are now namespaced (see D3).
+6. Concurrent delivery-attempt transactions could race the notification-status rollup and leave it permanently stale -> `NotificationStatusAggregator` now takes a pessimistic write lock on the parent row (see D12).
+7. The H2 console was enabled by default with a blank-password `sa` account and no auth layer -> disabled by default, opt-in via a `dev` Spring profile (see D10).
+8. `sourceSystem`/`eventId` accepted blank/whitespace-only values, which could collapse to a colliding derived idempotency key -> now `@NotBlank` + length-bounded.
+9. `RetryScheduler` resubmitted the same still-in-flight row to the async executor on every poll tick -> now dispatches synchronously via the atomic-claim `process()` method (see D11).
+10. `notification.routing.default-channel-order` was documented but never read -> now wired into `RoutingService` as the no-preference fallback ordering.
+
 ## D1. Persistence: H2 in-memory via Spring Data JPA
 - **Context**: Prototype must run end-to-end with no external setup.
 - **Rationale**: Zero-infrastructure `mvn spring-boot:run`; JPA gives a
@@ -22,17 +39,37 @@ Each entry: **Decision - Context - Rationale - Trade-off/Alternative considered*
   system would use SQS/Kafka/RabbitMQ (or a DB-backed outbox with a
   recovery sweep) so in-flight work survives restarts and scales across
   instances.
+- **Bounded-queue rejection recovery (fixed 2026-09-29)**: submitting a
+  freshly-queued row to the executor can throw `RejectedExecutionException`
+  once the queue is full. `NotificationSubmissionService` now catches this
+  per-target instead of letting it surface as a `500` - the row is already
+  persisted as `QUEUED`, and `RetryScheduler` sweeps any `QUEUED` row older
+  than `notification.retry.stale-queue-threshold-ms` (default 5s) so it
+  still gets dispatched, just delayed.
 
 ## D3. Deduplication boundary and retention (requirement 4.4)
 - **Submission-level boundary**: one `idempotencyKey` maps to exactly one
-  logical `NotificationEntity`. Enforced by a unique DB constraint plus an
-  explicit `IdempotencyRecordRepository` lookup-then-insert
-  (`DeduplicationService`), so races are caught by the DB constraint, not
-  just application logic.
-- **Key derivation**: if the caller does not supply `idempotencyKey`, one is
-  derived as `sourceSystem:eventId`. This is a documented assumption for the
-  ambiguous-requirement scenario: the spec requires idempotency but does not
-  mandate the key be caller-supplied.
+  logical `NotificationEntity`, enforced entirely by `IdempotencyRecordEntity`
+  (an expiry-aware lookup-then-insert in `DeduplicationService`).
+  `NotificationEntity.idempotencyKey` itself is **not** a unique DB
+  constraint (fixed 2026-09-29): a permanent unique index there fought the
+  documented retention window, since after a key expired in
+  `idempotency_records` the notifications table would still reject reuse
+  with a constraint violation.
+- **Atomic reservation (fixed 2026-09-29)**: reserving the idempotency key,
+  persisting the notification, and routing/queuing its recipient-channels
+  now all happen inside one `@Transactional` method
+  (`NotificationPersistenceService.submitTransactionally`). Previously the
+  reservation could commit before persistence/routing ran, so a later
+  failure left the key permanently mapped to a notification that was never
+  fully created - subsequent legitimate retries of that submission would
+  have been wrongly suppressed as duplicates of a non-existent record.
+- **Source-system namespacing (fixed 2026-09-29)**: both the caller-supplied
+  key and the derived fallback are now namespaced as `sourceSystem:<key>` /
+  `sourceSystem:eventId`. Previously an explicit caller-supplied key was used
+  verbatim, so two independent source systems reusing the same key value
+  would suppress each other's notifications and could leak the first
+  system's notification id/status to the second.
 - **Retention**: idempotency records expire after
   `notification.idempotency.retention-hours` (default 24h). After expiry the
   key may be reused. This bounds storage growth at the cost of only
@@ -121,3 +158,55 @@ attempt claim) and fixed by moving the annotated logic into a dedicated
 collaborator bean (`NotificationPersistenceService`,
 `DeliveryAttemptExecutor`) called from a thin orchestrator. Documented here
 because it is an easy regression to reintroduce.
+
+## D10. H2 console disabled by default (fixed 2026-09-29)
+- **Context**: the H2 console has no authentication layer of its own, and
+  the datasource uses a blank-password `sa` account. Leaving it enabled
+  unconditionally means any network client that can reach the service can
+  browse or mutate the database through `/h2-console`.
+- **Fix**: `spring.h2.console.enabled` is now `false` in `application.yml`
+  and only re-enabled by `application-dev.yml` (activate with
+  `--spring.profiles.active=dev` / `SPRING_PROFILES_ACTIVE=dev`), which is
+  documented as local-development-only.
+- **Trade-off**: reviewers must remember to add the `dev` profile to inspect
+  the database manually; this is intentional friction to prevent the profile
+  from being active anywhere it shouldn't be.
+
+## D11. Retry scheduler dispatches synchronously (fixed 2026-09-29)
+- **Context**: `RetryScheduler` polls on a fixed interval; because a row
+  stays `FAILED_RETRYABLE`/`QUEUED` until a worker actually claims it, an
+  item that hasn't been picked up yet by the time the *next* poll tick
+  fires was being resubmitted again via `processAsync`, piling up duplicate
+  no-op tasks in the bounded delivery executor under backlog and risking
+  starving new deliveries.
+- **Fix**: the scheduler now calls `DeliveryOrchestrator.process` (the
+  synchronous path) directly. The atomic claim in `claimForAttempt` still
+  makes redundant calls for an already-claimed row a harmless no-op, but
+  running on the scheduler's own thread means the same row is never
+  in-flight on two different executor tasks at once.
+- **Trade-off**: a large batch of due retries now processes serially on the
+  scheduler thread rather than fanning out across the worker pool, so the
+  poll loop runs slightly slower under heavy retry volume. Documented and
+  accepted as the safer default for a single-node prototype; a production
+  system would use per-item visibility timeouts from a real queue instead.
+- **Also added**: a stale-`QUEUED` sweep (`findByStatusAndQueuedAtBefore`)
+  recovers rows that were persisted but never actually dispatched (see D2).
+
+## D12. Pessimistic locking for the status rollup (fixed 2026-09-29)
+- **Context**: `NotificationStatusAggregator.recompute` reads all sibling
+  `RecipientChannelEntity` rows and writes a derived overall status. Two
+  siblings completing at nearly the same time on separate transactions could
+  each read a stale snapshot of the other (still `ATTEMPTING`), both compute
+  `IN_PROGRESS`, and both commit - leaving the notification permanently
+  stuck even though every child had actually reached a terminal state.
+- **Fix**: `NotificationRepository.findByIdForUpdate` takes a
+  `PESSIMISTIC_WRITE` lock on the parent notification row before reading its
+  children, serializing concurrent recomputes for the same notification id
+  so the later transaction always observes the earlier one's committed
+  child state.
+- **Trade-off**: adds row-lock contention (and, under H2's default lock
+  timeout, a small risk of a lock-wait timeout under pathological
+  concurrency) in exchange for correctness. Acceptable given delivery
+  attempts for one notification are typically low-cardinality (one row per
+  recipient/channel).
+

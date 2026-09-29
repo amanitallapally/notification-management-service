@@ -12,8 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Optional;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Handles requirement 4.1 (submit) end to end: bean validation happens at
@@ -26,18 +25,15 @@ public class NotificationSubmissionService {
     private static final Logger log = LoggerFactory.getLogger(NotificationSubmissionService.class);
 
     private final NotificationRepository notificationRepository;
-    private final DeduplicationService deduplicationService;
     private final AuditService auditService;
     private final NotificationPersistenceService persistenceService;
     private final DeliveryOrchestrator deliveryOrchestrator;
 
     public NotificationSubmissionService(NotificationRepository notificationRepository,
-                                          DeduplicationService deduplicationService,
                                           AuditService auditService,
                                           NotificationPersistenceService persistenceService,
                                           DeliveryOrchestrator deliveryOrchestrator) {
         this.notificationRepository = notificationRepository;
-        this.deduplicationService = deduplicationService;
         this.auditService = auditService;
         this.persistenceService = persistenceService;
         this.deliveryOrchestrator = deliveryOrchestrator;
@@ -47,38 +43,45 @@ public class NotificationSubmissionService {
         String notificationId = NotificationEntity.newId();
         String idempotencyKey = resolveIdempotencyKey(request);
 
-        Optional<String> existing = deduplicationService.checkAndReserve(idempotencyKey, notificationId);
-        if (existing.isPresent()) {
-            String originalId = existing.get();
-            log.info("Suppressed duplicate submission idempotencyKey={} originalNotificationId={}", idempotencyKey, originalId);
-            auditService.record(originalId, AuditAction.NOTIFICATION_DUPLICATE_SUPPRESSED,
+        NotificationPersistenceService.SubmissionResult result =
+                persistenceService.submitTransactionally(notificationId, idempotencyKey, request);
+
+        if (result.duplicate()) {
+            log.info("Suppressed duplicate submission idempotencyKey={} originalNotificationId={}", idempotencyKey, result.notificationId());
+            auditService.record(result.notificationId(), AuditAction.NOTIFICATION_DUPLICATE_SUPPRESSED,
                     "idempotencyKey=" + idempotencyKey);
-            NotificationStatus status = notificationRepository.findById(originalId)
+            NotificationStatus status = notificationRepository.findById(result.notificationId())
                     .map(NotificationEntity::getStatus)
                     .orElse(NotificationStatus.DUPLICATE);
-            return new NotificationSubmissionResponse(originalId, status, true);
+            return new NotificationSubmissionResponse(result.notificationId(), status, true);
         }
 
-        NotificationEntity notification = persistenceService.persistNotification(notificationId, idempotencyKey, request);
         log.info("Accepted notification={} sourceSystem={} eventId={}", notificationId, request.sourceSystem(), request.eventId());
-        auditService.record(notificationId, AuditAction.NOTIFICATION_ACCEPTED,
-                "sourceSystem=" + request.sourceSystem() + ",eventId=" + request.eventId());
+        log.debug("Queued {} recipient-channel targets for notification={}", result.targets().size(), notificationId);
 
-        List<RecipientChannelEntity> targets = persistenceService.routeAndQueue(notification, request);
-        log.debug("Queued {} recipient-channel targets for notification={}", targets.size(), notificationId);
-        targets.forEach(target -> deliveryOrchestrator.processAsync(target.getId()));
+        for (RecipientChannelEntity target : result.targets()) {
+            try {
+                deliveryOrchestrator.processAsync(target.getId());
+            } catch (RejectedExecutionException rejected) {
+                // The row is already persisted as QUEUED; RetryScheduler's stale-queue
+                // sweep will pick it up and dispatch it, so this is not lost - just delayed.
+                log.warn("Delivery executor queue full; recipientChannel={} left QUEUED for scheduler recovery", target.getId());
+            }
+        }
 
-        return new NotificationSubmissionResponse(notificationId, notification.getStatus(), false);
+        return new NotificationSubmissionResponse(notificationId, result.notification().getStatus(), false);
     }
 
     private String resolveIdempotencyKey(NotificationRequest request) {
-        if (request.idempotencyKey() != null && !request.idempotencyKey().isBlank()) {
-            return request.idempotencyKey();
-        }
-        // Documented assumption (ambiguous requirement scenario): when the caller
-        // does not supply an explicit key, derive one from sourceSystem+eventId so
-        // that resubmissions of the same upstream event are still deduplicated.
-        return request.sourceSystem() + ":" + request.eventId();
+        // Always namespace by sourceSystem - both for the caller-supplied key and
+        // the derived fallback - so two source systems using the same key/eventId
+        // never suppress or leak each other's notifications (see
+        // memory-bank/decisions.md#deduplication).
+        String suffix = (request.idempotencyKey() != null && !request.idempotencyKey().isBlank())
+                ? request.idempotencyKey().trim()
+                : request.eventId();
+        return request.sourceSystem() + ":" + suffix;
     }
 }
+
 

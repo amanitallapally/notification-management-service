@@ -1,0 +1,6 @@
+# Local development only - never activate this profile in a shared/deployed
+# environment. Re-enables the H2 web console for manual DB inspection.
+spring:
+  h2:
+    console:
+      enabled: true

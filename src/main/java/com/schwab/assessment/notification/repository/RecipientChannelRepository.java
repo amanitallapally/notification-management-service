@@ -29,4 +29,12 @@ public interface RecipientChannelRepository extends JpaRepository<RecipientChann
 
     List<RecipientChannelEntity> findByStatusAndNextRetryAtBefore(
             com.schwab.assessment.notification.domain.DeliveryStatus status, Instant before);
+
+    /**
+     * Recovery path for rows that were persisted as QUEUED but never
+     * actually got dispatched (e.g. the bounded delivery executor rejected
+     * the submission, or the process restarted before dispatch happened).
+     */
+    List<RecipientChannelEntity> findByStatusAndQueuedAtBefore(
+            com.schwab.assessment.notification.domain.DeliveryStatus status, Instant before);
 }

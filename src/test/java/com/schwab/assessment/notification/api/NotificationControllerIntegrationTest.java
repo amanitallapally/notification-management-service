@@ -77,6 +77,20 @@ class NotificationControllerIntegrationTest {
     }
 
     @Test
+    void malformedJsonWithInvalidEnumIsRejectedAndAudited() throws Exception {
+        String body = "{\"sourceSystem\":\"trading-alerts\",\"eventId\":\"evt-1\","
+                + "\"notificationType\":\"ALERT\",\"severity\":\"NOT_A_REAL_SEVERITY\","
+                + "\"priority\":\"HIGH\",\"recipients\":[\"user-1\"],\"requestedChannels\":[\"EMAIL\"]}";
+
+        mockMvc.perform(post("/api/v1/notifications")
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.rejectionReference").exists())
+                .andExpect(jsonPath("$.message", is("Request body is malformed or contains invalid field values")));
+    }
+
+    @Test
     void duplicateSubmissionWithSameIdempotencyKeyReturnsOriginalId() throws Exception {
         String idempotencyKey = "idem-" + UUID.randomUUID();
         NotificationRequest request = new NotificationRequest(
@@ -88,6 +102,24 @@ class NotificationControllerIntegrationTest {
         String secondId = submit(request);
 
         org.assertj.core.api.Assertions.assertThat(secondId).isEqualTo(firstId);
+    }
+
+    @Test
+    void sameExplicitKeyFromDifferentSourceSystemsDoesNotCollide() throws Exception {
+        String sharedKey = "shared-key-" + UUID.randomUUID();
+        NotificationRequest fromSystemA = new NotificationRequest(
+                "system-a", UUID.randomUUID().toString(), NotificationType.ALERT,
+                Severity.MEDIUM, Priority.NORMAL, List.of("user-1"), List.of(ChannelType.EMAIL),
+                sharedKey, "subject", null, null);
+        NotificationRequest fromSystemB = new NotificationRequest(
+                "system-b", UUID.randomUUID().toString(), NotificationType.ALERT,
+                Severity.MEDIUM, Priority.NORMAL, List.of("user-1"), List.of(ChannelType.EMAIL),
+                sharedKey, "subject", null, null);
+
+        String idA = submit(fromSystemA);
+        String idB = submit(fromSystemB);
+
+        org.assertj.core.api.Assertions.assertThat(idB).isNotEqualTo(idA);
     }
 
     @Test

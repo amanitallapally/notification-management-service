@@ -85,9 +85,18 @@ Once started:
 - API base path: `http://localhost:8080/api/v1/notifications`
 - Swagger UI: `http://localhost:8080/swagger-ui.html`
 - OpenAPI JSON: `http://localhost:8080/v3/api-docs`
-- H2 console (dev only): `http://localhost:8080/h2-console`
-  (JDBC URL `jdbc:h2:mem:notificationdb`, user `sa`, empty password)
 - Actuator health: `http://localhost:8080/actuator/health`
+
+The H2 console is **disabled by default** (it has no auth layer of its own,
+and the datasource uses a blank-password `sa` account - see
+[Limitations & trade-offs](#5-limitations--trade-offs)). To inspect the
+database locally, run with the `dev` profile instead:
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+```
+Then open `http://localhost:8080/h2-console` (JDBC URL
+`jdbc:h2:mem:notificationdb`, user `sa`, empty password). Never activate the
+`dev` profile in a shared or deployed environment.
 
 ### Try it (curl walkthrough)
 
@@ -155,12 +164,12 @@ Run the full suite:
 ```bash
 ./mvnw test
 ```
-22 tests, all passing, split into two layers:
+26 tests, all passing, split into two layers:
 
 **Unit tests** (fast, no Spring context):
 - `RoutingServiceTest` - requested-channel ceiling, preference filtering/
   ordering, fallback when preference doesn't intersect the request,
-  CRITICAL-severity escalation.
+  CRITICAL-severity escalation, and default-channel-order fallback ordering.
 - `RetryPolicyTest` - exhaustion boundary and exponential backoff math,
   including the backoff cap.
 - `EmailProviderTest` - every `FailureType` classification plus the flaky
@@ -173,8 +182,15 @@ Run the full suite:
 context + MockMvc + real in-memory DB + real async executor):
 - `submitAndDeliverSucceeds` - full happy path to `DELIVERED`, plus an audit
   trail assertion.
+- `invalidSubmissionIsRejectedAndAudited` - missing-field validation failure
+  is audited with a `rejectionReference`.
+- `malformedJsonWithInvalidEnumIsRejectedAndAudited` - unreadable request
+  body (invalid enum literal) is also audited, without leaking parser
+  internals in the response.
 - `duplicateSubmissionWithSameIdempotencyKeyReturnsOriginalId` - dedup
   boundary through the real HTTP layer.
+- `sameExplicitKeyFromDifferentSourceSystemsDoesNotCollide` - source-system
+  namespacing prevents cross-tenant idempotency-key collisions.
 - `invalidRecipientFailsTerminallyWithoutRetry` - terminal failure
   classification, asserts exactly one attempt (no wasted retries).
 - `flakyRecipientRetriesThenSucceeds` - exercises the retry scheduler
@@ -204,11 +220,12 @@ oversights. Each is expanded on in [memory-bank/decisions.md](memory-bank/decisi
 |---|---|---|---|
 | Persistence | H2 in-memory; data lost on restart | Zero setup to run/review | Postgres/MySQL; schema is already portable (plain JPA, no H2-specific features) |
 | Async pipeline | In-JVM thread pool, not a broker | No external infra; simple to reason about and test | SQS/Kafka/RabbitMQ or a DB outbox, so in-flight work survives a restart and scales across instances |
-| Crash recovery | An item claimed (`ATTEMPTING`) when the process dies is **not** automatically resumed | Keeps the claim mechanism simple (single atomic UPDATE) | A recovery sweep that requeues stuck `ATTEMPTING` rows past a staleness threshold |
+| Crash recovery | An item claimed (`ATTEMPTING`) when the process dies is **not** automatically resumed. (A `QUEUED` row that was never dispatched at all *is* recovered - `RetryScheduler` sweeps stale `QUEUED` rows.) | Keeps the claim mechanism simple (single atomic UPDATE) | A recovery sweep that also requeues stuck `ATTEMPTING` rows past a staleness threshold |
 | Idempotency retention | Dedup keys expire after 24h (configurable) | Bounds storage growth | Tiered storage / archival instead of hard expiry, if longer dedup windows are required |
-| Auth | No authentication/authorization on the API | Out of scope for a prototype focused on notification logic | API keys or mTLS per source system, plus per-source-system query scoping |
+| Auth | No authentication/authorization on the API; H2 console and actuator endpoints are likewise unauthenticated (H2 console is off by default outside the `dev` profile) | Out of scope for a prototype focused on notification logic | API keys or mTLS per source system, plus per-source-system query scoping, and locking down actuator/H2 behind the same auth layer |
 | Expiration/cancellation | `expiresAt` is stored and validated but not enforced by a sweep; no cancel-before-delivery API | Keeps the delivery pipeline simple | A scheduled expiry sweep transitioning stale `QUEUED` items to `EXPIRED`, and a `DELETE /notifications/{id}` style cancel API |
 | Recipient preferences | Read-only, seeded via `DemoDataSeeder` | Avoids building a full preference-management API for a prototype | A recipient-profile service/API with proper CRUD and validation |
+| Status-rollup locking | Uses a pessimistic DB row lock (`PESSIMISTIC_WRITE`) to serialize concurrent recomputes for one notification | Correct under concurrency, but adds lock contention/wait time proportional to fan-out per notification | Fine for prototype fan-out (one row per recipient/channel); a high fan-out production system might use an event-sourced/CQRS rollup instead |
 | Transaction boundary | Provider "I/O" runs inside the same DB transaction as the claim/result persist | Correct and simple because providers are fast in-memory simulations | Move real provider I/O outside the transaction (claim in txn A, call provider, persist result in txn B), since real network calls should never hold a DB transaction open |
 | Audit content | Sensitive-content exclusion is enforced by convention/code review | Simple for a prototype | A serialization-time redaction filter as defense in depth |
 
